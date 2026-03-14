@@ -1,0 +1,392 @@
+#!/bin/bash
+# =============================================================================
+# ghostty-session v2.1 — Auto Session Manager for Ghostty + Claude Code
+#
+# Automatically saves & restores:
+#   - Ghostty tabs with working directories
+#   - Claude Code sessions (matched by project path → session UUID)
+#   - Auto-resume via `claude --resume <session-id>`
+#
+# Install: bash <(curl -sL https://raw.githubusercontent.com/Supersynergy/ghostty-session-manager/main/install.sh)
+# =============================================================================
+
+set -euo pipefail
+
+VERSION="2.1.0"
+SESSION_DIR="${XDG_DATA_HOME:-$HOME/.local/share}/ghostty-sessions"
+PANE_DIR="$SESSION_DIR/panes"
+CLAUDE_META_DIR="$HOME/.claude/usage-data/session-meta"
+CLAUDE_PROJECTS_DIR="$HOME/.claude/projects"
+
+mkdir -p "$SESSION_DIR" "$PANE_DIR"
+
+# Colors
+G='\033[0;32m' C='\033[0;36m' Y='\033[1;33m' R='\033[0;31m' D='\033[2m' N='\033[0m'
+
+# =============================================================================
+# Claude Code Session Resolver
+# Maps: CWD → project hash → latest session UUID
+# =============================================================================
+
+# Convert a path to Claude's project hash format
+_path_to_hash() {
+    echo "$1" | sed 's|/|-|g'
+}
+
+# Find the latest Claude Code session ID for a given working directory
+find_claude_session() {
+    local cwd="$1"
+    local hash
+    hash=$(_path_to_hash "$cwd")
+    local project_dir="$CLAUDE_PROJECTS_DIR/$hash"
+
+    # Strategy 1: Find latest .jsonl in project dir (most reliable)
+    if [ -d "$project_dir" ]; then
+        local latest
+        latest=$(ls -t "$project_dir"/*.jsonl 2>/dev/null | head -1)
+        if [ -n "$latest" ]; then
+            basename "$latest" .jsonl
+            return 0
+        fi
+    fi
+
+    # Strategy 2: Search session-meta for matching project_path
+    if [ -d "$CLAUDE_META_DIR" ]; then
+        local result
+        result=$(python3 -c "
+import json, os, glob
+meta_dir = '$CLAUDE_META_DIR'
+target = '$cwd'
+best_id = ''
+best_time = ''
+for f in sorted(glob.glob(os.path.join(meta_dir, '*.json')), key=os.path.getmtime, reverse=True):
+    try:
+        data = json.load(open(f))
+        if data.get('project_path') == target:
+            print(data['session_id'])
+            break
+    except: pass
+" 2>/dev/null)
+        if [ -n "$result" ]; then
+            echo "$result"
+            return 0
+        fi
+    fi
+
+    return 1
+}
+
+# =============================================================================
+# Pane Registry — called on every prompt by shell hook
+# =============================================================================
+
+register_pane() {
+    local shell_pid="${1:-$$}"
+    local cwd="${2:-$PWD}"
+    local claude_session=""
+
+    # Check if Claude Code is a child of this shell
+    local claude_pid
+    claude_pid=$(pgrep -P "$shell_pid" -f "claude" 2>/dev/null | head -1 || true)
+
+    if [ -n "$claude_pid" ]; then
+        # Claude is running — try to find its session ID
+        # First check if --resume was used
+        local cmd
+        cmd=$(ps -p "$claude_pid" -o args= 2>/dev/null || true)
+        claude_session=$(echo "$cmd" | sed -n 's/.*--resume[= ]\([^ ]*\).*/\1/p' 2>/dev/null || true)
+
+        # If no --resume, resolve from project directory
+        if [ -z "$claude_session" ]; then
+            local claude_cwd
+            claude_cwd=$(lsof -p "$claude_pid" 2>/dev/null | awk '/cwd/{print $NF}' | head -1 || true)
+            [ -z "$claude_cwd" ] && claude_cwd="$cwd"
+            claude_session=$(find_claude_session "$claude_cwd" 2>/dev/null || true)
+        fi
+    fi
+
+    # Write pane state atomically
+    local tmp="$PANE_DIR/${shell_pid}.tmp"
+    local dst="$PANE_DIR/${shell_pid}.json"
+
+    cat > "$tmp" 2>/dev/null << EOF
+{"pid":$shell_pid,"cwd":"$cwd","claude_session":"${claude_session:-}","claude_running":${claude_pid:+true}${claude_pid:-false},"ts":$(date +%s)}
+EOF
+    mv "$tmp" "$dst" 2>/dev/null
+}
+
+# =============================================================================
+# Save Session
+# =============================================================================
+
+save_session() {
+    local name="${1:-default}"
+    local quiet="${2:-}"
+    local timestamp
+    timestamp=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
+
+    # Clean stale panes (process dead)
+    for f in "$PANE_DIR"/*.json; do
+        [ ! -f "$f" ] && continue
+        local pid
+        pid=$(python3 -c "import json; print(json.load(open('$f'))['pid'])" 2>/dev/null || echo "0")
+        kill -0 "$pid" 2>/dev/null || rm -f "$f"
+    done
+
+    # Collect all live panes
+    local panes_json="[]"
+    local claude_count=0
+    local pane_count=0
+
+    panes_json=$(python3 -c "
+import json, glob, os
+
+panes = []
+for f in sorted(glob.glob('$PANE_DIR/*.json'), key=os.path.getmtime):
+    try:
+        data = json.load(open(f))
+        panes.append(data)
+    except: pass
+
+print(json.dumps(panes))
+" 2>/dev/null || echo "[]")
+
+    pane_count=$(echo "$panes_json" | python3 -c "import json,sys; print(len(json.load(sys.stdin)))" 2>/dev/null || echo "0")
+    claude_count=$(echo "$panes_json" | python3 -c "import json,sys; print(sum(1 for p in json.load(sys.stdin) if p.get('claude_session')))" 2>/dev/null || echo "0")
+
+    # Also scan for recent Claude sessions not in active panes (e.g., just closed)
+    local recent_claude="[]"
+    if [ -d "$CLAUDE_META_DIR" ]; then
+        recent_claude=$(python3 -c "
+import json, glob, os, time
+
+now = time.time()
+sessions = []
+for f in sorted(glob.glob('$CLAUDE_META_DIR/*.json'), key=os.path.getmtime, reverse=True)[:20]:
+    try:
+        data = json.load(open(f))
+        age_hours = (now - os.path.getmtime(f)) / 3600
+        if age_hours < 24:  # Last 24 hours
+            sessions.append({
+                'session_id': data.get('session_id', ''),
+                'project_path': data.get('project_path', ''),
+                'summary': data.get('summary', ''),
+                'start_time': data.get('start_time', ''),
+                'age_hours': round(age_hours, 1)
+            })
+    except: pass
+print(json.dumps(sessions[:10]))
+" 2>/dev/null || echo "[]")
+    fi
+
+    # Build session file
+    python3 -c "
+import json
+
+session = {
+    'name': '$name',
+    'version': '$VERSION',
+    'saved_at': '$timestamp',
+    'panes': json.loads('''$panes_json'''),
+    'recent_claude_sessions': json.loads('''$recent_claude'''),
+}
+
+# Build restore plan
+restore = []
+seen_cwds = set()
+for pane in session['panes']:
+    cwd = pane.get('cwd', '')
+    if not cwd or cwd in seen_cwds:
+        continue
+    seen_cwds.add(cwd)
+    restore.append({
+        'cwd': cwd,
+        'claude_session': pane.get('claude_session', ''),
+        'claude_running': pane.get('claude_running', False),
+    })
+
+# Add recently-used Claude sessions not in active panes
+for cs in session['recent_claude_sessions']:
+    pp = cs.get('project_path', '')
+    if pp and pp not in seen_cwds:
+        restore.append({
+            'cwd': pp,
+            'claude_session': cs.get('session_id', ''),
+            'claude_running': False,
+            'was_recent': True,
+            'summary': cs.get('summary', ''),
+        })
+
+session['restore_plan'] = restore
+
+with open('$SESSION_DIR/${name}.json', 'w') as f:
+    json.dump(session, f, indent=2)
+" 2>/dev/null
+
+    touch "$SESSION_DIR/.last_save"
+
+    [ "$quiet" != "quiet" ] && echo -e "${G}Session '$name' saved${N} — $pane_count panes, $claude_count Claude sessions"
+}
+
+# =============================================================================
+# Restore Session
+# =============================================================================
+
+restore_session() {
+    local name="${1:-default}"
+    local session_file="$SESSION_DIR/${name}.json"
+
+    [ ! -f "$session_file" ] && { echo -e "${R}Session '$name' not found${N}"; list_sessions; return 1; }
+
+    echo -e "${C}Restoring session '$name'...${N}"
+
+    local restore_data
+    restore_data=$(python3 -c "
+import json
+data = json.load(open('$session_file'))
+for r in data.get('restore_plan', []):
+    cwd = r.get('cwd', '')
+    sid = r.get('claude_session', '')
+    had_claude = '1' if (r.get('claude_running') or sid) else '0'
+    summary = r.get('summary', '')[:50]
+    print(f\"{cwd}|{had_claude}|{sid}|{summary}\")
+" 2>/dev/null)
+
+    [ -z "$restore_data" ] && { echo -e "${Y}Nothing to restore${N}"; return 0; }
+
+    local tab_num=0
+    local first=true
+
+    while IFS='|' read -r cwd has_claude session_id summary; do
+        [ -z "$cwd" ] && continue
+        [ ! -d "$cwd" ] && cwd="$HOME"
+        tab_num=$((tab_num + 1))
+
+        local claude_cmd=""
+        if [ "$has_claude" = "1" ] && [ -n "$session_id" ]; then
+            claude_cmd="claude --resume $session_id"
+        elif [ "$has_claude" = "1" ]; then
+            claude_cmd="claude --resume"
+        fi
+
+        if [ "$first" = true ]; then
+            first=false
+            builtin cd "$cwd" 2>/dev/null || true
+            echo -e "  Tab $tab_num: ${C}$cwd${N}"
+            if [ -n "$claude_cmd" ]; then
+                echo -e "         ${G}→ $claude_cmd${N}"
+                [ -n "$summary" ] && echo -e "         ${D}($summary)${N}"
+            fi
+        elif [[ "$OSTYPE" == "darwin"* ]]; then
+            # Open new tab and run command
+            local full_cmd="cd $cwd"
+            [ -n "$claude_cmd" ] && full_cmd="$full_cmd && $claude_cmd"
+
+            osascript << APPLESCRIPT 2>/dev/null
+tell application "Ghostty"
+    activate
+    tell application "System Events"
+        keystroke "t" using command down
+        delay 0.5
+        keystroke "$full_cmd"
+        key code 36
+    end tell
+end tell
+APPLESCRIPT
+            echo -e "  Tab $tab_num: ${C}$cwd${N}"
+            [ -n "$claude_cmd" ] && echo -e "         ${G}→ Claude Code resuming${N}${summary:+ ${D}($summary)${N}}"
+        else
+            echo -e "  Tab $tab_num: ${C}$cwd${N}"
+            [ -n "$claude_cmd" ] && echo -e "         ${G}→ $claude_cmd${N}"
+        fi
+    done <<< "$restore_data"
+
+    echo -e "\n${G}Restored $tab_num tabs${N}"
+}
+
+# =============================================================================
+# List Sessions
+# =============================================================================
+
+list_sessions() {
+    local has_files=false
+    for f in "$SESSION_DIR"/*.json; do [ -f "$f" ] && has_files=true && break; done
+    $has_files || { echo -e "${Y}No saved sessions${N}"; return 0; }
+
+    echo -e "${C}Sessions:${N}"
+    printf "\n  %-18s %-12s %-6s %-8s %s\n" "NAME" "SAVED" "TABS" "CLAUDE" "DETAILS"
+    printf "  %-18s %-12s %-6s %-8s %s\n" "---" "---" "---" "---" "---"
+
+    for f in "$SESSION_DIR"/*.json; do
+        [ ! -f "$f" ] && continue
+        local name
+        name=$(basename "$f" .json)
+        [ "$name" = ".autosave" ] && name="(auto)"
+
+        python3 -c "
+import json
+data = json.load(open('$f'))
+panes = len(data.get('restore_plan', data.get('panes', [])))
+claude = sum(1 for r in data.get('restore_plan', []) if r.get('claude_session'))
+saved = data.get('saved_at', data.get('created', '?'))[:16].replace('T', ' ')
+details = []
+for r in data.get('restore_plan', [])[:3]:
+    s = r.get('summary', '')
+    if s: details.append(s[:30])
+detail_str = ', '.join(details) if details else '-'
+print(f'  {\"$name\":<18s} {saved:<12s} {panes:<6d} {claude:<8d} {detail_str}')
+" 2>/dev/null
+    done
+    echo ""
+}
+
+delete_session() {
+    local name="${1:-}"
+    [ -z "$name" ] && { echo -e "${R}Usage: ghostty-session delete <name>${N}"; return 1; }
+    local f="$SESSION_DIR/${name}.json"
+    [ ! -f "$f" ] && { echo -e "${R}Not found: $name${N}"; return 1; }
+    rm "$f" && echo -e "${G}Deleted: $name${N}"
+}
+
+show_help() {
+    cat << 'HELP'
+ghostty-session v2.1 — Auto Session Manager for Ghostty + Claude Code
+
+USAGE:  ghostty-session <command> [name]
+
+  save [name]       Save tabs + Claude sessions (default: "default")
+  restore [name]    Restore tabs + resume Claude Code via --resume
+  list              Show saved sessions with Claude session details
+  delete <name>     Delete a session
+  autosave          Silent auto-save (called by shell hook)
+  auto-restore      Restore autosave on Ghostty launch
+  register-pane     Register pane state (called by shell hook)
+
+AUTO FEATURES (via shell hook in ~/.zshrc):
+  ✓ Every prompt    → tracks CWD + detects running Claude Code
+  ✓ Every 5 min     → auto-saves all tabs + Claude sessions
+  ✓ Terminal close  → auto-saves before exit
+  ✓ Ghostty launch  → auto-restores tabs + resumes Claude Code
+
+HOW IT FINDS CLAUDE SESSIONS:
+  1. Detects claude as child process of your shell
+  2. Maps CWD → ~/.claude/projects/<hash>/ → latest session UUID
+  3. On restore: opens tab, cd, runs `claude --resume <uuid>`
+
+INSTALL:
+  bash <(curl -sL https://raw.githubusercontent.com/Supersynergy/ghostty-session-manager/main/install.sh)
+HELP
+}
+
+case "${1:-help}" in
+    save)           save_session "${2:-default}" ;;
+    restore)        restore_session "${2:-default}" ;;
+    list|ls)        list_sessions ;;
+    delete|rm)      delete_session "${2:-}" ;;
+    autosave)       save_session ".autosave" "quiet" ;;
+    auto-restore)   [ -f "$SESSION_DIR/.autosave.json" ] && restore_session ".autosave" ;;
+    register-pane)  register_pane "${2:-$$}" "${3:-$PWD}" ;;
+    version|-v)     echo "ghostty-session v$VERSION" ;;
+    help|-h|--help) show_help ;;
+    *)              echo -e "${R}Unknown: $1${N}"; show_help; exit 1 ;;
+esac
