@@ -52,11 +52,25 @@ fi
 if [ -z "$_GS_RESTORED" ]; then
     export _GS_RESTORED=1 _GS_LAST_SAVE=$(date +%s)
 
-    if [ -f "${XDG_DATA_HOME:-$HOME/.local/share}/ghostty-sessions/.autosave.json" ]; then
-        # Only in the first shell (not in tabs opened by restore)
-        if [ "$(pgrep -x ghostty 2>/dev/null | wc -l | tr -d ' ')" -le 1 ]; then
+    _GS_AUTOSAVE="${XDG_DATA_HOME:-$HOME/.local/share}/ghostty-sessions/.autosave.json"
+    if [ -f "$_GS_AUTOSAVE" ]; then
+        # Detect if this is the first tab of a fresh Ghostty launch
+        # _GS_RESTORED is inherited by child tabs via export, so only the
+        # very first shell (where it was unset) reaches here.
+        # Extra guard: skip if another ghostty-session restore is already running
+        if ! pgrep -f "ghostty-session.*restore" >/dev/null 2>&1; then
             echo -e "\033[2m[ghostty-session] Restoring last session...\033[0m"
             "$_GS_BIN" auto-restore
+
+            # Execute pending Claude Code resume command (from first tab)
+            _GS_PENDING="${XDG_DATA_HOME:-$HOME/.local/share}/ghostty-sessions/.pending_cmd"
+            if [ -f "$_GS_PENDING" ]; then
+                _GS_CMD=$(cat "$_GS_PENDING")
+                rm -f "$_GS_PENDING"
+                echo ""
+                echo -e "\033[0;32m→ Resuming Claude Code...\033[0m"
+                eval "$_GS_CMD"
+            fi
         fi
     fi
 fi

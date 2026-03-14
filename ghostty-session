@@ -276,6 +276,9 @@ for r in data.get('restore_plan', []):
             if [ -n "$claude_cmd" ]; then
                 echo -e "         ${G}→ $claude_cmd${N}"
                 [ -n "$summary" ] && echo -e "         ${D}($summary)${N}"
+                # Write a helper script that the shell hook will execute
+                # after restore completes (needs interactive TTY)
+                echo "$claude_cmd" > "$SESSION_DIR/.pending_cmd"
             fi
         elif [[ "$OSTYPE" == "darwin"* ]]; then
             # Open new tab and run command
