@@ -1,4 +1,4 @@
-# ghostty-session — Auto Session Manager for Ghostty + Claude Code
+# ghostty-session: Auto Session Manager for Ghostty + Claude Code
 
 > **Never lose your terminal tabs or Claude Code conversations again.**
 > Auto-saves everything. Auto-restores on restart. Zero config needed.
@@ -8,9 +8,9 @@
 ## The Problem
 
 Ghostty has great tabs and splits, but **restarting it kills everything**:
-- All your tabs and working directories — gone
-- All running Claude Code sessions — gone
-- Your entire workspace layout — gone
+- All your tabs and working directories, gone
+- All running Claude Code sessions, gone
+- Your entire workspace layout, gone
 
 ## The Solution
 
@@ -60,7 +60,7 @@ Latest session UUID: a1b2c3d4-e5f6-...
 Restore command: claude --resume a1b2c3d4-e5f6-...
 ```
 
-This means your **exact conversation** is restored — not just a new Claude session.
+This means your **exact conversation** is restored, not just a new Claude session.
 
 ### 3. Save Format
 
@@ -126,10 +126,10 @@ gs              # ghostty-session
 
 ## Requirements
 
-- **Ghostty** 1.1.0+ (any version)
-- **Python 3** (for JSON parsing)
-- **macOS** for full tab automation (Linux: CWD restore only)
-- **Claude Code** (optional — works without it too)
+- Ghostty 1.1.0+ (any version)
+- Python 3 (for JSON parsing)
+- macOS for full tab automation (Linux: CWD restore only)
+- Claude Code (optional, works without it too)
 
 ## Configuration
 
