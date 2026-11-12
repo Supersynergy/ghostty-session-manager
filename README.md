@@ -113,13 +113,31 @@ gs              # ghostty-session
 
 ## What Gets Restored
 
-| Feature | Auto-Save | Auto-Restore |
-|---------|-----------|-------------|
-| Tab working directories | ✓ every prompt | ✓ on launch |
-| Claude Code sessions | ✓ by UUID mapping | ✓ via `--resume` |
-| Tab count and order | ✓ | ✓ (macOS via AppleScript) |
-| Recent Claude sessions | ✓ last 24h from meta | shown in `list` |
-| Named sessions | ✓ manual `save` | ✓ manual `restore` |
+<details>
+<summary><strong>📋 Show 5 entries</strong></summary>
+
+- **Tab working directories**<br>
+  Auto-Save: ✓ every prompt<br>
+  Auto-Restore: ✓ on launch
+
+- **Claude Code sessions**<br>
+  Auto-Save: ✓ by UUID mapping<br>
+  Auto-Restore: ✓ via `--resume`
+
+- **Tab count and order**<br>
+  Auto-Save: ✓<br>
+  Auto-Restore: ✓ (macOS via AppleScript)
+
+- **Recent Claude sessions**<br>
+  Auto-Save: ✓ last 24h from meta<br>
+  Auto-Restore: shown in `list`
+
+- **Named sessions**<br>
+  Auto-Save: ✓ manual `save`<br>
+  Auto-Restore: ✓ manual `restore`
+
+</details>
+
 
 ## What Is NOT Restored
 
@@ -154,14 +172,41 @@ rm -rf ~/.local/share/ghostty-sessions
 
 ## How This Compares
 
-| | ghostty-session | tmux | Zellij |
-|---|---|---|---|
-| **Session save/restore** | ✓ automatic | ✓ manual (plugins) | ✓ manual |
-| **Claude Code integration** | ✓ auto-resume | ✗ | ✗ |
-| **Native Ghostty tabs** | ✓ | ✗ (own tabs) | ✗ (own tabs) |
-| **GPU rendering preserved** | ✓ | ✓ | ✓ |
-| **Zero config** | ✓ | ✗ | ✗ |
-| **Process persistence** | ✗ | ✓ | ✓ |
+<details>
+<summary><strong>📋 Show 6 entries</strong></summary>
+
+- **Session save/restore**<br>
+  ghostty-session: ✓ automatic<br>
+  tmux: ✓ manual (plugins)<br>
+  Zellij: ✓ manual
+
+- **Claude Code integration**<br>
+  ghostty-session: ✓ auto-resume<br>
+  tmux: ✗<br>
+  Zellij: ✗
+
+- **Native Ghostty tabs**<br>
+  ghostty-session: ✓<br>
+  tmux: ✗ (own tabs)<br>
+  Zellij: ✗ (own tabs)
+
+- **GPU rendering preserved**<br>
+  ghostty-session: ✓<br>
+  tmux: ✓<br>
+  Zellij: ✓
+
+- **Zero config**<br>
+  ghostty-session: ✓<br>
+  tmux: ✗<br>
+  Zellij: ✗
+
+- **Process persistence**<br>
+  ghostty-session: ✗<br>
+  tmux: ✓<br>
+  Zellij: ✓
+
+</details>
+
 
 **Use ghostty-session if** you want automatic tab + Claude Code persistence with native Ghostty.
 **Use tmux/Zellij if** you need running process persistence (long-running servers, builds).
