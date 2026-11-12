@@ -1,6 +1,6 @@
 # ghostty-session: Auto Session Manager for Ghostty + Claude Code
 
-![Terminal sessions restored into an organized workspace](docs/assets/cover.png)
+![Ghostty Session Manager](docs/assets/cover.png)
 
 [Install](#install-one-line) · [How it works](#how-it-works) · [Commands](#manual-commands) · [Requirements](#requirements) · [License](#license)
 
