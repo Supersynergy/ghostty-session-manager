@@ -1,6 +1,9 @@
+<p align="center">
+  <img src="docs/assets/cover.png" alt="Ghostty Session Manager" width="960">
+</p>
+
 # ghostty-session: Auto Session Manager for Ghostty + Claude Code
 
-![Ghostty Session Manager](docs/assets/cover.png)
 
 [Install](#install-one-line) · [How it works](#how-it-works) · [Commands](#manual-commands) · [Requirements](#requirements) · [License](#license)
 
